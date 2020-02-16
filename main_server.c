@@ -9,13 +9,20 @@
 #include "stm32l1xx_ll_system.h"
 #include "stm32l1xx_ll_tim.h"
 #include "stm32l1xx_ll_usart.h"
-#include "sonic.h"
+
 #include <string.h>
 #include "ESP8266_lowlevel_conf.h"
+#include "sonic.h"
 
 void SystemClock_Config(void);
 uint8_t ESP8266_SendCmd(uint8_t*);
 void ESP8266_RespBufferReset(void);
+void WIFI(void);
+void SonicSensor(void);
+void WIFI_wait(void);
+void LED_GPIO_Conf(void);
+void Time_base_conf(void);
+void State_Def(void);
 
 #define MAX_RESP_BUFFER_SIZE			200
 
@@ -41,20 +48,61 @@ int main()
 	
 		SystemClock_Config();
 		GPIO_Config();
-		TIMx_IC_Config();
-		LL_GPIO_SetOutputPin(GPIOB,LL_GPIO_PIN_7);
-		LL_GPIO_ResetOutputPin(GPIOB,LL_GPIO_PIN_5);
+	LED_GPIO_Conf();
+		WIFI();
 		
-		(ESP_USART_LOWLEVEL_Recv(resp, idx) != 1)?(idx = (idx + 1) % MAX_RESP_BUFFER_SIZE):(idx);		
+//		LL_GPIO_SetOutputPin(GPIOB,LL_GPIO_PIN_7);
+//		LL_GPIO_ResetOutputPin(GPIOB,LL_GPIO_PIN_5);
+		
+		TIMx_IC_Config();
+		while(1)
+		{
+			WIFI_wait();
+			SonicSensor();
+			if(state==1){
+				if(distance/100<=5)
+					state=2;
+			}
+			else{
+				if(distance/100<=5)
+					state=2;
+				else
+					state=0;
+			}
+			State_Def();
+		}
+		
+}
+void WIFI_wait(void)
+{
+	(ESP_USART_LOWLEVEL_Recv(resp, idx) != 1)?(idx = (idx + 1) % MAX_RESP_BUFFER_SIZE):(idx);		
 		if(strstr((const char*)resp, "Book"))
 		{
 			ESP8266_SendCmd((uint8_t*)"AT+CIPSEND=0,4\r\n") ;
 			ESP8266_RespBufferReset() ;
 			ESP8266_SendCmd((uint8_t*)"Booking") ;
 			ESP8266_RespBufferReset() ;
+			state=1;
 		}
 }
-
+void State_Def(void)
+{
+	switch(state){
+		case 0:
+		{LL_GPIO_ResetOutputPin(GPIOC,LL_GPIO_PIN_1|LL_GPIO_PIN_2);
+			LL_GPIO_SetOutputPin(GPIOC,LL_GPIO_PIN_0);
+		break;}
+		case 1:
+		{LL_GPIO_ResetOutputPin(GPIOC,LL_GPIO_PIN_0|LL_GPIO_PIN_2);
+			LL_GPIO_SetOutputPin(GPIOC,LL_GPIO_PIN_1);
+			LL_TIM_EnableCounter(TIM4);
+		break;}
+		case 2:
+		{LL_GPIO_ResetOutputPin(GPIOC,LL_GPIO_PIN_1|LL_GPIO_PIN_0);
+			LL_GPIO_SetOutputPin(GPIOC,LL_GPIO_PIN_2);
+		break;}
+	}
+}
 uint8_t ESP8266_SendCmd(uint8_t* cmd)
 {
 	ESP_USART_LOWLEVEL_Transmit(cmd);
@@ -88,7 +136,7 @@ void ESP8266_RespBufferReset(void)
 	idx = 0;
 }
 
-int WIFI()
+void WIFI(void)
 {
 	ESP_USART_LOWLEVEL_Conf();
 	ESP_USART_Start();
@@ -103,7 +151,7 @@ int WIFI()
 	ESP8266_SendCmd((uint8_t*)"AT+RST\r\n");
 	ESP8266_RespBufferReset();	
 	LL_mDelay(1000);
-	ESP8266_SendCmd((uint8_t*)"AT+CWJAP=\"your hotspot ssid\",\"your hotspot pass\"\r\n");
+	ESP8266_SendCmd((uint8_t*)"AT+CWJAP=\"MosQuito\",\"mos40542\"\r\n");
 	ESP8266_RespBufferReset();	
 	ESP8266_SendCmd((uint8_t*)"AT+CWJAP?\r\n");
 	ESP8266_RespBufferReset();	
@@ -153,11 +201,23 @@ void TIM2_IRQHandler(void)
 		
 }
 
+void LED_GPIO_Conf(void){
+	LL_GPIO_InitTypeDef gpio;
+		LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_GPIOC);
+		//GPIO_Config
+		gpio.Mode = LL_GPIO_MODE_OUTPUT;
+		gpio.OutputType = LL_GPIO_OUTPUT_PUSHPULL;
+		gpio.Pull = LL_GPIO_PULL_NO;
+		gpio.Speed = LL_GPIO_SPEED_FREQ_VERY_HIGH;
+		gpio.Pin = LL_GPIO_PIN_0 | LL_GPIO_PIN_1 | LL_GPIO_PIN_2 ;
+		LL_GPIO_Init(GPIOC,&gpio);
+}
+
 void SonicSensor(void){
 		
-			LL_GPIO_SetOutputPin(GPIOA,LL_GPIO_PIN_2);
+			LL_GPIO_SetOutputPin(GPIOB,LL_GPIO_PIN_9);
 			LL_mDelay(1);
-			LL_GPIO_ResetOutputPin(GPIOA,LL_GPIO_PIN_2);
+			LL_GPIO_ResetOutputPin(GPIOB,LL_GPIO_PIN_9);
 			if(uhICIndex == 2)
 			{
 					//Period calculation
@@ -170,6 +230,34 @@ void SonicSensor(void){
 					uhICIndex = 0;
 			} 
 	
+}
+void Time_base_conf(void)
+{
+	LL_TIM_InitTypeDef timbase;
+	LL_APB1_GRP1_EnableClock(LL_APB1_GRP1_PERIPH_TIM4);
+	
+	timbase.ClockDivision = LL_TIM_CLOCKDIVISION_DIV1;
+	timbase.CounterMode = LL_TIM_COUNTERDIRECTION_UP;
+	timbase.Autoreload = 10000 - 1;
+	timbase.Prescaler = 16000 - 1;
+	
+	LL_TIM_Init(TIM4,&timbase);
+	
+	LL_TIM_EnableIT_UPDATE(TIM4);
+	
+	NVIC_SetPriority(TIM4_IRQn, 0);
+	NVIC_EnableIRQ(TIM4_IRQn);
+	
+	//LL_TIM_EnableCounter(TIM4);
+}	
+void TIM4_IRQHandler(void)
+{
+	if(LL_TIM_IsActiveFlag_UPDATE(TIM4) == SET)
+	{
+		LL_TIM_ClearFlag_UPDATE(TIM4);
+		state=0;
+		LL_TIM_DisableCounter(TIM4);
+	}
 }
 void SystemClock_Config(void)
 {
